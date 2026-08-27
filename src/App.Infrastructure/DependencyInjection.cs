@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using App.Application.Ports.Output;
 using App.Infrastructure.Persistence;
 using App.Infrastructure.Persistence.Repositories;
+using App.Infrastructure.Security;
 
 namespace App.Infrastructure;
 
@@ -34,6 +35,17 @@ public static class DependencyInjection
         });
 
         services.AddScoped<IProductRepository, ProductRepository>();
+        services.AddScoped<IUserRepository, UserRepository>();
+
+        return services;
+    }
+
+    public static IServiceCollection AddSecurity(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<JwtSettings>(configuration.GetSection("Jwt"));
+
+        services.AddScoped<IPasswordHasher, PasswordHasher>();
+        services.AddScoped<IJwtTokenGenerator, JwtTokenGenerator>();
 
         return services;
     }

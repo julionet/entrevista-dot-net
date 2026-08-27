@@ -1,6 +1,7 @@
 using App.Application.DTOs;
 using App.Application.Ports.Input;
 using App.Domain.Exceptions;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace App.WebApi.Controllers;
@@ -11,6 +12,7 @@ namespace App.WebApi.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public sealed class ProductsController : ControllerBase
 {
     private readonly IProductService _productService;
