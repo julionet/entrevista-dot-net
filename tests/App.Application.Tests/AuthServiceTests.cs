@@ -49,18 +49,20 @@ public sealed class AuthServiceTests
     }
 
     [Fact]
-    public async Task LoginAsync_ComCredenciaisValidas_DeveRetornarToken()
+    public async Task LoginAsync_ComCredenciaisValidas_DeveRetornarAccessTokenERefreshToken()
     {
         var user = new User(Guid.NewGuid(), "user@test.com", "hashed-password");
         var request = new LoginRequest("user@test.com", "Senha123!");
         _userRepositoryMock.Setup(r => r.GetByEmailAsync("user@test.com", It.IsAny<CancellationToken>()))
             .ReturnsAsync(user);
         _passwordHasherMock.Setup(h => h.Verify("hashed-password", request.Password)).Returns(true);
-        _jwtTokenGeneratorMock.Setup(j => j.GenerateToken(user)).Returns("fake-jwt-token");
+        _jwtTokenGeneratorMock.Setup(j => j.GenerateAccessToken(user)).Returns("fake-access-token");
+        _jwtTokenGeneratorMock.Setup(j => j.GenerateRefreshToken(user)).Returns("fake-refresh-token");
 
         var result = await _sut.LoginAsync(request);
 
-        Assert.Equal("fake-jwt-token", result.Token);
+        Assert.Equal("fake-access-token", result.AccessToken);
+        Assert.Equal("fake-refresh-token", result.RefreshToken);
     }
 
     [Fact]
@@ -71,7 +73,7 @@ public sealed class AuthServiceTests
             .ReturnsAsync((User?)null);
 
         await Assert.ThrowsAsync<DomainException>(() => _sut.LoginAsync(request));
-        _jwtTokenGeneratorMock.Verify(j => j.GenerateToken(It.IsAny<User>()), Times.Never);
+        _jwtTokenGeneratorMock.Verify(j => j.GenerateAccessToken(It.IsAny<User>()), Times.Never);
     }
 
     [Fact]
@@ -84,7 +86,43 @@ public sealed class AuthServiceTests
         _passwordHasherMock.Setup(h => h.Verify("hashed-password", request.Password)).Returns(false);
 
         await Assert.ThrowsAsync<DomainException>(() => _sut.LoginAsync(request));
-        _jwtTokenGeneratorMock.Verify(j => j.GenerateToken(It.IsAny<User>()), Times.Never);
+        _jwtTokenGeneratorMock.Verify(j => j.GenerateAccessToken(It.IsAny<User>()), Times.Never);
     }
 
+    [Fact]
+    public async Task RefreshAsync_ComTokenValido_DeveRetornarNovoAccessTokenERefreshToken()
+    {
+        var user = new User(Guid.NewGuid(), "user@test.com", "hashed-password");
+        _jwtTokenGeneratorMock.Setup(j => j.ValidateRefreshToken("valid-refresh-token")).Returns(user.Id);
+        _userRepositoryMock.Setup(r => r.GetByIdAsync(user.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(user);
+        _jwtTokenGeneratorMock.Setup(j => j.GenerateAccessToken(user)).Returns("new-access-token");
+        _jwtTokenGeneratorMock.Setup(j => j.GenerateRefreshToken(user)).Returns("new-refresh-token");
+
+        var result = await _sut.RefreshAsync(new RefreshTokenRequest("valid-refresh-token"));
+
+        Assert.Equal("new-access-token", result.AccessToken);
+        Assert.Equal("new-refresh-token", result.RefreshToken);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_ComTokenInvalidoOuExpirado_DeveLancarDomainException()
+    {
+        _jwtTokenGeneratorMock.Setup(j => j.ValidateRefreshToken("token-invalido")).Returns((Guid?)null);
+
+        await Assert.ThrowsAsync<DomainException>(() => _sut.RefreshAsync(new RefreshTokenRequest("token-invalido")));
+        _userRepositoryMock.Verify(r => r.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_ComUsuarioInexistente_DeveLancarDomainException()
+    {
+        var userId = Guid.NewGuid();
+        _jwtTokenGeneratorMock.Setup(j => j.ValidateRefreshToken("valid-refresh-token")).Returns(userId);
+        _userRepositoryMock.Setup(r => r.GetByIdAsync(userId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((User?)null);
+
+        await Assert.ThrowsAsync<DomainException>(() => _sut.RefreshAsync(new RefreshTokenRequest("valid-refresh-token")));
+        _jwtTokenGeneratorMock.Verify(j => j.GenerateAccessToken(It.IsAny<User>()), Times.Never);
+    }
 }

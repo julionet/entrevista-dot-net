@@ -9,5 +9,6 @@ namespace App.Application.Ports.Input;
 public interface IAuthService
 {
     Task<RegisterResponse> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default);
-    Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
+    Task<TokenResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
+    Task<TokenResponse> RefreshAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default);
 }

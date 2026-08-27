@@ -86,8 +86,8 @@ Implementações concretas das portas de saída. Referencia `App.Application` (p
 - `Persistence/Configurations/ProductConfiguration.cs`, `UserConfiguration.cs`: mapeamento (Fluent API) das entidades — tabela, chave, tamanhos de coluna (`User.Email` tem índice único). Nem `Product` nem `User` têm construtor vazio ou setters públicos; o EF Core faz *constructor binding* automaticamente (casa os parâmetros do construtor com as propriedades), então o `Domain` não precisa de nenhum ajuste para ser persistido.
 - `Persistence/Repositories/ProductRepository.cs`, `UserRepository.cs`: implementações de `IProductRepository`/`IUserRepository` usando `AppDbContext`. Poderiam ser substituídas por Dapper, MongoDB, um client HTTP para outro microsserviço, etc. — **sem alterar uma linha sequer** de `Domain` ou `Application`.
 - `Security/PasswordHasher.cs`: implementação de `IPasswordHasher` usando `PasswordHasher<T>` do ASP.NET Core Identity (PBKDF2).
-- `Security/JwtTokenGenerator.cs`: implementação de `IJwtTokenGenerator`, gera o JWT (claims `sub`, `email`, `jti`) assinado com HMAC-SHA256, usando as configurações de `JwtSettings`.
-- `Security/JwtSettings.cs`: opções (`Issuer`, `Audience`, `SecretKey`, `ExpirationMinutes`) — bind da seção `Jwt` do `appsettings.json`.
+- `Security/JwtTokenGenerator.cs`: implementação de `IJwtTokenGenerator`. Gera access token e refresh token (ambos JWT, claims `sub`, `email`, `jti`, assinados com HMAC-SHA256) e valida um refresh token recebido. Access e refresh token usam **audiences diferentes** (`Jwt:Audience` vs `Jwt:RefreshAudience`) — é assim que um refresh token é impedido de ser usado como Bearer token nas rotas protegidas (o middleware de autenticação só aceita a audience de access token).
+- `Security/JwtSettings.cs`: opções (`Issuer`, `Audience`, `RefreshAudience`, `SecretKey`, `ExpirationMinutes`, `RefreshTokenExpirationDays`) — bind da seção `Jwt` do `appsettings.json`.
 - `DependencyInjection.cs`: `AddPersistence` — escolhe o provider de banco e registra `IProductRepository`/`IUserRepository`. `AddSecurity` — registra `IPasswordHasher`, `IJwtTokenGenerator` e faz o bind de `JwtSettings`.
 
 #### Trocando de banco de dados
@@ -107,17 +107,24 @@ Nenhuma outra camada (`Domain`, `Application`, `WebApi`) precisa mudar.
 Ponto de entrada da aplicação. Referencia `App.Application` (para consumir a porta de entrada) e `App.Infrastructure` (apenas para fazer o *wiring* de DI em `Program.cs` — o controller nunca referencia `Infrastructure` diretamente).
 
 - `Controllers/ProductsController.cs`: adaptador driving. Traduz requisições HTTP em chamadas a `IProductService`. Não conhece a entidade `Product` do domínio nem o repositório concreto. Protegido com `[Authorize]` — exige um Bearer token válido.
-- `Controllers/AuthController.cs`: adaptador driving. Expõe `POST /api/auth/register` e `POST /api/auth/login`, traduzindo requisições HTTP em chamadas a `IAuthService`. Marcado com `[AllowAnonymous]` (não exige token, por razões óbvias).
+- `Controllers/AuthController.cs`: adaptador driving. Expõe `POST /api/auth/register`, `POST /api/auth/login` e `POST /api/auth/refresh`, traduzindo requisições HTTP em chamadas a `IAuthService`. Marcado com `[AllowAnonymous]` (não exige token, por razões óbvias).
+- `Controllers/HealthController.cs`: adaptador driving. Expõe `GET /api/health`, sem depender de nenhuma outra camada (nem repositório, nem `Infrastructure`) — é só um *liveness check* pra confirmar que a API está no ar. `[AllowAnonymous]`.
 - `Program.cs`: é onde a "mágica" da inversão de dependência acontece — o *composition root* chama `AddPersistence`/`AddSecurity` para registrar os adaptadores concretos, garante a criação do banco (`EnsureCreated`) na inicialização, e configura o middleware de autenticação JWT Bearer (`AddAuthentication().AddJwtBearer(...)`).
 
-## Autenticação (JWT Bearer)
+## Autenticação (JWT Bearer + refresh token)
 
 - `POST /api/auth/register`: cria um usuário (`Email`, `Password`). A senha nunca é persistida em texto puro — é hasheada com `PasswordHasher<T>` do ASP.NET Core Identity antes de ir para o banco. E-mail duplicado retorna `400`.
-- `POST /api/auth/login`: valida e-mail/senha e devolve um JWT (`{ "token": "..." }`). Credenciais inválidas ou usuário inativo retornam `401` com mensagem genérica (não revela se o e-mail existe).
-- Todas as rotas de `ProductsController` exigem `Authorization: Bearer {token}`; sem token válido, a resposta é `401`.
-- As configurações do token ficam em `appsettings.json`, seção `Jwt` (`Issuer`, `Audience`, `SecretKey`, `ExpirationMinutes`).
+- `POST /api/auth/login`: valida e-mail/senha e devolve `{ "access_token": "...", "refresh_token": "..." }`. Credenciais inválidas ou usuário inativo retornam `401` com mensagem genérica (não revela se o e-mail existe).
+- `POST /api/auth/refresh`: recebe `{ "refresh_token": "..." }` e devolve um novo par `access_token`/`refresh_token`. Refresh token inválido, expirado, ou de um usuário que não existe mais/está inativo → `401`.
+- Todas as rotas de `ProductsController` exigem `Authorization: Bearer {access_token}`; sem token válido, a resposta é `401`.
+- **Refresh token é stateless** (não fica guardado no banco): é apenas outro JWT, com validade mais longa (`Jwt:RefreshTokenExpirationDays`, padrão 7 dias) e uma *audience* diferente da do access token (`Jwt:RefreshAudience`). É essa audience diferente que impede um refresh token de ser usado diretamente como Bearer token numa rota protegida. Trade-off dessa abordagem: como não há registro no banco, não é possível revogar um refresh token antes do seu vencimento (ex.: logout forçado, detecção de roubo de token). Para isso, a evolução natural seria persistir o refresh token (tabela própria, com rotação e revogação).
+- As configurações do token ficam em `appsettings.json`, seção `Jwt` (`Issuer`, `Audience`, `RefreshAudience`, `SecretKey`, `ExpirationMinutes`, `RefreshTokenExpirationDays`).
 
 > **Importante**: a `SecretKey` no `appsettings.json` é apenas um valor de exemplo para rodar o projeto localmente. Em qualquer ambiente real, substitua-a por variável de ambiente, User Secrets (`dotnet user-secrets`) ou um cofre de segredos (Azure Key Vault, AWS Secrets Manager etc.) — nunca deixe uma secret real versionada no repositório.
+
+## Health check
+
+`GET /api/health` devolve `200 OK` com `{ "status": "Healthy", "timestampUtc": "..." }`. Não exige autenticação. Útil para load balancers, orquestradores (Kubernetes liveness/readiness probe) ou monitoramento externo.
 
 ### `tests/App.Application.Tests` — testes unitários
 
@@ -172,7 +179,7 @@ Content-Type: application/json
 }
 ```
 
-A resposta do login traz o token: `{ "token": "eyJhbGci..." }`. Use-o no header `Authorization` das chamadas a `/api/products`:
+A resposta do login traz os dois tokens: `{ "access_token": "eyJhbGci...", "refresh_token": "eyJhbGci..." }`. Use o `access_token` no header `Authorization` das chamadas a `/api/products`:
 
 ```http
 POST /api/products
@@ -199,4 +206,19 @@ Content-Type: application/json
 {
   "percentage": 10
 }
+```
+
+Quando o `access_token` expirar, use o `refresh_token` pra obter um novo par sem precisar logar de novo:
+
+```http
+POST /api/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "eyJhbGci..."
+}
+```
+
+```http
+GET /api/health
 ```

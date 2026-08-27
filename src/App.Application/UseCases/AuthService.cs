@@ -35,7 +35,7 @@ public sealed class AuthService : IAuthService
         return new RegisterResponse(user.Id, user.Email);
     }
 
-    public async Task<LoginResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
+    public async Task<TokenResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
     {
         var email = NormalizeEmail(request.Email);
 
@@ -48,8 +48,28 @@ public sealed class AuthService : IAuthService
         if (!user.IsActive)
             throw new DomainException("Usuário inativo.");
 
-        var token = _jwtTokenGenerator.GenerateToken(user);
-        return new LoginResponse(token);
+        return CreateTokenResponse(user);
+    }
+
+    public async Task<TokenResponse> RefreshAsync(RefreshTokenRequest request, CancellationToken cancellationToken = default)
+    {
+        var userId = _jwtTokenGenerator.ValidateRefreshToken(request.RefreshToken)
+            ?? throw new DomainException("Refresh token inválido ou expirado.");
+
+        var user = await _userRepository.GetByIdAsync(userId, cancellationToken)
+            ?? throw new DomainException("Refresh token inválido ou expirado.");
+
+        if (!user.IsActive)
+            throw new DomainException("Usuário inativo.");
+
+        return CreateTokenResponse(user);
+    }
+
+    private TokenResponse CreateTokenResponse(User user)
+    {
+        var accessToken = _jwtTokenGenerator.GenerateAccessToken(user);
+        var refreshToken = _jwtTokenGenerator.GenerateRefreshToken(user);
+        return new TokenResponse(accessToken, refreshToken);
     }
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();

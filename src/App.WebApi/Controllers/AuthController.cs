@@ -36,11 +36,25 @@ public sealed class AuthController : ControllerBase
     }
 
     [HttpPost("login")]
-    public async Task<ActionResult<LoginResponse>> Login(LoginRequest request, CancellationToken cancellationToken)
+    public async Task<ActionResult<TokenResponse>> Login(LoginRequest request, CancellationToken cancellationToken)
     {
         try
         {
             var result = await _authService.LoginAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (DomainException ex)
+        {
+            return Unauthorized(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost("refresh")]
+    public async Task<ActionResult<TokenResponse>> Refresh(RefreshTokenRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _authService.RefreshAsync(request, cancellationToken);
             return Ok(result);
         }
         catch (DomainException ex)
